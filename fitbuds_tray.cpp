@@ -58,12 +58,7 @@ public:
     }
 
     int run(HINSTANCE instance) {
-        const auto address = configured_address();
-        if (!address) {
-            MessageBoxW(nullptr, L"请在程序旁的 FitBudsTray.ini 中填写 [bluetooth] 下的 address。",
-                        app_name, MB_OK | MB_ICONERROR);
-            return 1;
-        }
+
         icon_ = LoadIconW(instance, MAKEINTRESOURCEW(IDI_FITBUDS));
         if (!icon_) icon_ = LoadIconW(nullptr, IDI_APPLICATION);
         taskbar_created_ = RegisterWindowMessageW(L"TaskbarCreated");
@@ -85,7 +80,7 @@ public:
         }
         SetTimer(window_, refresh_timer, 45000, nullptr);
         try {
-            worker_ = std::thread([this, address = *address] { run_worker(address); });
+            worker_ = std::thread([this] { run_worker(); });
             request_refresh(true);
         } catch (const std::system_error&) {
             snapshot_.status = L"无法启动蓝牙线程";
@@ -195,18 +190,18 @@ private:
         if (!stopping_) PostMessageW(window_, result_message, 0, 0);
     }
 
-    void run_worker(BTH_ADDR address) {
+    void run_worker() {
         Snapshot current;
         try {
             Winsock winsock;
-            process_tasks(current, address);
+            process_tasks(current);
         } catch (const RfcommError&) {
             current.status = L"无法初始化 Windows 蓝牙连接";
             publish(current);
         }
     }
 
-    void process_tasks(Snapshot& current, BTH_ADDR address) {
+    void process_tasks(Snapshot& current) {
         constexpr std::uint8_t refresh_opcodes[]{0xF2, 0xD5, 0x08, 0xCC};
         constexpr size_t refresh_done = std::size(refresh_opcodes);
         std::optional<Rfcomm> connection;
@@ -293,11 +288,20 @@ private:
                     }
                 }
                 if (!connection) {
+                    const auto address = find_paired_fitbuds();
                     current = Snapshot{};
+                    if (!address) {
+                        current.status = L"未找到已配对的 FitBuds，请检查 Windows 蓝牙设置";
+                        refresh_step = refresh_done;
+                        battery_attempts_left = 0;
+                        if (command) --settings_in_progress_;
+                        publish(current);
+                        continue;
+                    }
                     current.status = L"正在连接耳机…";
                     publish(current);
                     connection.emplace(&stopping_);
-                    connection->connect_device(address);
+                    connection->connect_device(*address);
                     // A new Windows RFCOMM session can drop its first application request.
                     connection->query(0xD8, 1, 250ms);
                     refresh_step = 0;

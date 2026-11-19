@@ -27,8 +27,8 @@ int main(int argc, char** argv) {
             }
             return 0;
         }
-        const auto address = configured_address();
-        if (!address) throw std::runtime_error("Set [bluetooth] address in FitBudsTray.ini next to the executable");
+        const auto address = find_paired_fitbuds();
+        if (!address) throw std::runtime_error("No paired FitBuds found. Check Windows Bluetooth settings.");
         Winsock winsock;
         Rfcomm connection;
         connection.connect_device(*address);

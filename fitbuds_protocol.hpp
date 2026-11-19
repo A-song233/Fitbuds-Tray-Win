@@ -2,6 +2,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <ws2bth.h>
+#include <bluetoothapis.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -21,34 +22,37 @@ using Bytes = std::vector<std::uint8_t>;
 using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
 
-inline std::optional<BTH_ADDR> configured_address() {
-    std::wstring path(32768, L'\0');
-    const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
-    if (!length || length >= path.size()) return std::nullopt;
-    path.resize(length);
-    const auto separator = path.find_last_of(L"\\/");
-    if (separator == std::wstring::npos) return std::nullopt;
-    path.resize(separator + 1);
-    path += L"FitBudsTray.ini";
-
-    wchar_t text[64]{};
-    const DWORD count = GetPrivateProfileStringW(L"bluetooth", L"address", L"", text,
-                                                  static_cast<DWORD>(std::size(text)), path.c_str());
-    if (count >= std::size(text) - 1) return std::nullopt;
-    BTH_ADDR address = 0;
-    int digits = 0;
-    for (const wchar_t ch : std::wstring_view(text, count)) {
-        if (ch == L':' || ch == L'-') continue;
-        int digit;
-        if (ch >= L'0' && ch <= L'9') digit = ch - L'0';
-        else if (ch >= L'a' && ch <= L'f') digit = ch - L'a' + 10;
-        else if (ch >= L'A' && ch <= L'F') digit = ch - L'A' + 10;
-        else return std::nullopt;
-        if (++digits > 12) return std::nullopt;
-        address = (address << 4) | digit;
+inline bool is_fitbuds_name(std::wstring_view name) {
+    constexpr std::wstring_view match = L"FitBuds";
+    for (std::size_t i = 0; i + match.size() <= name.size(); ++i) {
+        const int length = static_cast<int>(match.size());
+        if (CompareStringOrdinal(name.data() + i, length, match.data(), length, TRUE) == CSTR_EQUAL)
+            return true;
     }
-    if (digits != 12 || address == 0) return std::nullopt;
-    return address;
+    return false;
+}
+
+inline std::optional<BTH_ADDR> find_paired_fitbuds() {
+    BLUETOOTH_DEVICE_SEARCH_PARAMS search{};
+    search.dwSize = sizeof(search);
+    search.fReturnAuthenticated = TRUE;
+    // Use the paired Classic Bluetooth device list. Do not start a radio inquiry.
+    BLUETOOTH_DEVICE_INFO device{};
+    device.dwSize = sizeof(device);
+    const auto find = BluetoothFindFirstDevice(&search, &device);
+    if (!find) return std::nullopt;
+
+    std::optional<BTH_ADDR> match;
+    do {
+        const auto end = std::find(std::begin(device.szName), std::end(device.szName), L'\0');
+        const std::wstring_view name(device.szName, end - device.szName);
+        if (!device.fAuthenticated || !device.Address.ullLong || !is_fitbuds_name(name)) continue;
+        if (!match || device.fConnected) match = device.Address.ullLong;
+        if (device.fConnected) break;
+    } while (BluetoothFindNextDevice(find, &device));
+
+    BluetoothFindDeviceClose(find);
+    return match;
 }
 
 constexpr GUID service{0xEDF00000, 0xEDFE, 0xDFED, {0xFE, 0xDF, 0xED, 0xFE, 0xDF, 0xED, 0xFE, 0xDF}};
